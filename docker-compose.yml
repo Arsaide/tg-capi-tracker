@@ -1,0 +1,59 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tg-capi-tracker-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-capi-tracker-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tgcapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tgcapi}
+      POSTGRES_DB: ${POSTGRES_DB:-tgcapi}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tgcapi} -d ${POSTGRES_DB:-tgcapi}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tg-capi-tracker-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Внутри docker-сети ходим до сервисов по их именам, а не по localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tgcapi}:${POSTGRES_PASSWORD:-tgcapi}@postgres:5432/${POSTGRES_DB:-tgcapi}?schema=public
+      REDIS_URL: redis://redis:6379
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      BOT_TOKEN: ${BOT_TOKEN}
+    ports:
+      - "${PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
