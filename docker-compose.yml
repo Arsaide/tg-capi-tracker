@@ -45,7 +45,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      # Внутри docker-сети ходим до сервисов по их именам, а не по localhost.
       DATABASE_URL: postgresql://${POSTGRES_USER:-tgcapi}:${POSTGRES_PASSWORD:-tgcapi}@postgres:5432/${POSTGRES_DB:-tgcapi}?schema=public
       REDIS_URL: redis://redis:6379
       ADMIN_TOKEN: ${ADMIN_TOKEN}
