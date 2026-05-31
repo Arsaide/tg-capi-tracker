@@ -92,7 +92,7 @@ describe('CapiService', () => {
 
         it('hashes tgUserId into external_id (SHA-256, lowercase + trim)', async () => {
             const service = new CapiService(settingsStub());
-            await service.send({ eventName: 'Subscribe', ctx: clickCtx({ tgUserId: 12345 }) });
+            await service.send({ eventName: 'Lead', ctx: clickCtx({ tgUserId: 12345 }) });
             const body: any = mockedAxios.post.mock.calls[0][1];
             const expected = createHash('sha256').update('12345').digest('hex');
             expect(body.data[0].user_data.external_id).toBe(expected);

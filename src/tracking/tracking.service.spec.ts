@@ -50,34 +50,6 @@ describe('TrackingService', () => {
         });
     });
 
-    describe('bindLink / getByLink', () => {
-        it('returns null for unknown invite link', async () => {
-            expect(await service.getByLink('https://t.me/+missing')).toBeNull();
-        });
-
-        it('returns null when link maps to expired click', async () => {
-            await service.bindLink('https://t.me/+x', 'orphan-click');
-            expect(await service.getByLink('https://t.me/+x')).toBeNull();
-        });
-
-        it('round-trips clickId and ctx', async () => {
-            const clickId = await service.createClick({ fbclid: 'CL', ip: '5.5.5.5' });
-            await service.bindLink('https://t.me/+abc', clickId);
-
-            const got = await service.getByLink('https://t.me/+abc');
-            expect(got).not.toBeNull();
-            expect(got.clickId).toBe(clickId);
-            expect(got.ctx).toMatchObject({ fbclid: 'CL', ip: '5.5.5.5' });
-        });
-
-        it('sets TTL on the link mapping', async () => {
-            await service.bindLink('https://t.me/+y', 'cid');
-            const ttl = await redis.ttl('link:https://t.me/+y');
-            expect(ttl).toBeGreaterThan(0);
-            expect(ttl).toBeLessThanOrEqual(TTL);
-        });
-    });
-
     describe('linkUser / getClickByUser', () => {
         it('resolves the click stored against a tg user id', async () => {
             const clickId = await service.createClick({ fbclid: 'CL' });

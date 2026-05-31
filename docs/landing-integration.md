@@ -27,7 +27,7 @@ What to wire on the landing page so clicks and joins get attributed.
     fbq('track', 'PageView');
 </script>
 
-<a id="join-btn" href="#">Join channel</a>
+<a id="join-btn" href="#">Launch the bot</a>
 
 <script>
     (async function () {
@@ -43,9 +43,12 @@ What to wire on the landing page so clicks and joins get attributed.
                 fbc: getCookie('_fbc'),
             }),
         });
-        const { ok, inviteLink } = await res.json();
+        // `url` is the welcome-bot deep link. `inviteLink` is a deprecated alias of
+        // the same value, kept so older landings keep working without a change.
+        const { ok, url, inviteLink } = await res.json();
+        const link = url || inviteLink;
         const btn = document.getElementById('join-btn');
-        if (ok && inviteLink && btn) btn.href = inviteLink;
+        if (ok && link && btn) btn.href = link;
     })();
 </script>
 ```
@@ -54,8 +57,8 @@ What happens here:
 
 1. **Meta Pixel base code** fires `PageView` in the browser and writes the `_fbp` (per-browser, stable) and `_fbc` (built from the `fbclid` URL param) cookies.
 2. **A separate JS request** posts the click payload to the backend: `fbclid` from the URL (in case the `_fbc` cookie hasn't been written yet) plus both cookies.
-3. **Backend** persists the context in Redis, pulls an invite link from the pool, binds it to the click, fires `Lead` server-side, and returns the `inviteLink`.
-4. **JS rewrites the button's href** — the user clicks "Join" and walks through the personal link.
+3. **Backend** persists the context in Redis and returns a **welcome-bot deep link** `https://t.me/<WELCOME_BOT_USERNAME>?start=<clickId>` — the `clickId` is the attribution key carried as the bot's `/start` payload. No CAPI event fires here (the site-stage event is the browser `PageView`).
+4. **JS rewrites the button's href** — the user taps it, opens the welcome bot, and presses **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ**. That button press is the conversion: the welcome bot calls `POST /track/bot/activate` and the backend fires `Lead`.
 
 ## `POST /track/click` contract
 
@@ -76,29 +79,30 @@ The server also reads `client_ip_address` and `client_user_agent` from HTTP head
 **Response:**
 
 ```json
-{ "ok": true, "inviteLink": "https://t.me/+abcDef123..." }
+{
+    "ok": true,
+    "url": "https://t.me/alex_welcome_bot?start=2f1c…",
+    "inviteLink": "https://t.me/alex_welcome_bot?start=2f1c…",
+    "clickId": "2f1c…"
+}
 ```
 
-Or, when the pool is empty and the live-create fallback also failed:
+`url` is canonical; `inviteLink` is a deprecated alias holding the same value so existing
+landings keep working. `clickId` is returned for optional pixel dedup (see below).
 
-```json
-{ "ok": false, "error": "no_invite_link" }
-```
+If `WELCOME_BOT_USERNAME` is not configured on the server, `/track/click` throws (500) —
+set it in `/admin` first.
 
 ## Deduplication with the pixel
 
-Today the landing fires `PageView` via the pixel (browser) and `Lead` is sent server-side only (`POST /track/click`). No overlap by default → no dedup needed.
+The landing fires `PageView` via the pixel (browser); the server fires `Lead` only later, on the welcome-bot button press (`POST /track/bot/activate`). Different event names → no overlap, no dedup needed by default.
 
-If you also fire `Lead` from the pixel (e.g. `fbq('track', 'Lead')` on the join button), pass the **same `event_id`** the server uses. The server generates `lead_<clickId>`, and `clickId` is server-side and not exposed to the frontend. To dedup, either return `clickId` from the controller and forward it to `fbq`, or generate a shared `eventId` on the frontend and pass it to the backend.
-
-Example with `clickId` returned:
+If you ALSO fire a pixel-side `Lead` somewhere (e.g. `fbq('track', 'Lead')`), dedup it against the server `Lead` by passing the **same `event_id`** — the server uses `lead_<clickId>`, and `clickId` is returned by `/track/click`:
 
 ```js
-const { ok, inviteLink, clickId } = await res.json();
+const { ok, url, clickId } = await res.json();
 if (clickId) fbq('track', 'Lead', {}, { eventID: 'lead_' + clickId });
 ```
-
-(Requires extending the controller response with `clickId` — currently not returned.)
 
 ## CORS
 
@@ -110,30 +114,40 @@ app.enableCors({ origin: 'https://your-landing.example' });
 
 ## Deeper events (CompleteRegistration / Purchase)
 
-If a downstream bot/site in the funnel knows the Telegram `user_id` of the user:
+`tg:{userId} → clickId` is written to Redis when the welcome bot calls `/track/bot/start`
+or `/track/bot/activate`. While that mapping is alive (TTL 30 days) any follow-up event can
+be attributed by the Telegram `user_id` alone — the clickId does **not** need to be forwarded
+into the main trading bot.
+
+A downstream bot (e.g. the main trading bot confirming a deposit) `POST`s the event server-side
+and the backend resolves the click:
 
 ```ts
 const ctx = await tracking.getClickByUser(userId);
 if (ctx) {
     await capi.send({
-        eventName: 'CompleteRegistration',
-        eventId: `reg_${clickId}`,
+        eventName: 'Purchase',
+        eventId: `purchase_${clickId}`,
+        value: 50,
+        currency: 'USD',
         ctx: { ...ctx, tgUserId: userId },
     });
 }
 ```
 
-`tg:{userId} → clickId` is written to Redis at join time (`TelegramUpdate.onChatMember`). While that mapping is alive (TTL 30 days) any follow-up event can be sent with correct attribution.
+This is a natural extension point — wire a `/track/bot/event` endpoint (guarded by
+`ADMIN_TOKEN`, same as `/track/bot/activate`) that takes `{ tgUserId, eventName, value }`.
 
 ## Debugging match quality
 
 1. Set `FB_TEST_EVENT_CODE` in `/admin` (Events Manager → **Test Events** tab → a code like `TEST12345`).
 2. Walk the chain: landing → `Lead` should arrive in Test Events immediately.
-3. Join from a second account using the issued invite link → `Subscribe` should arrive.
-4. Match quality: each Test Events entry shows `% matched`. Expect 80–100% with `fbc + fbp + ip + ua + external_id` (after a join).
+3. Open the welcome bot via the issued deep link and press **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ** → `Lead` should arrive.
+4. Match quality: each Test Events entry shows `% matched`. Expect 80–100% with `fbc + fbp + ip + ua + external_id` (the button press adds `external_id`).
 
 Things that hurt match quality:
 
 - Landing without the pixel → no `_fbc`/`_fbp` cookies → only IP+UA make it through.
 - Backend behind nginx without `trust proxy` → the server's IP, not the client's.
 - `external_id` (Telegram user id) is hashed — this is correct, Meta expects SHA-256.
+- Note the IP/UA on `Lead` are the **landing** visitor's (captured at `/track/click`), not the welcome-bot request's — that is intentional and keeps them consistent with the `PageView` pixel hit.

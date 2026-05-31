@@ -60,7 +60,7 @@ describe('SettingsController (e2e)', () => {
         });
 
         it('returns settings list with sources', async () => {
-            store.set('POOL_MIN_SIZE', '500');
+            store.set('WELCOME_BOT_USERNAME', 'alex_welcome_bot');
             const res = await request(app.getHttpServer())
                 .get('/admin/settings')
                 .set('Authorization', `Bearer ${ADMIN_TOKEN}`);
@@ -68,11 +68,13 @@ describe('SettingsController (e2e)', () => {
             expect(Array.isArray(res.body.settings)).toBe(true);
 
             const byKey = Object.fromEntries(res.body.settings.map((s: any) => [s.key, s]));
-            expect(byKey.POOL_MIN_SIZE).toMatchObject({ source: 'runtime', value: '500' });
+            expect(byKey.WELCOME_BOT_USERNAME).toMatchObject({
+                source: 'runtime',
+                value: 'alex_welcome_bot',
+            });
             expect(byKey.FB_PIXEL_ID).toMatchObject({ source: 'env', value: 'env-pixel' });
             expect(byKey.FB_API_VERSION).toMatchObject({ source: 'default', value: 'v21.0' });
-            expect(byKey.CHANNEL_ID).toMatchObject({ source: 'unset' });
-            expect(byKey.BOT_TOKEN).toBeUndefined();
+            expect(byKey.LANDING_URL).toMatchObject({ source: 'unset' });
         });
     });
 
@@ -88,19 +90,11 @@ describe('SettingsController (e2e)', () => {
             const res = await request(app.getHttpServer())
                 .post('/admin/settings')
                 .set('Authorization', `Bearer ${ADMIN_TOKEN}`)
-                .send({ FB_PIXEL_ID: 'new-pixel', POOL_MIN_SIZE: 300 });
+                .send({ FB_PIXEL_ID: 'new-pixel', WELCOME_BOT_USERNAME: 'alex_welcome_bot' });
             expect(res.status).toBe(201);
             expect(res.body).toEqual({ ok: true });
             expect(store.get('FB_PIXEL_ID')).toBe('new-pixel');
-            expect(store.get('POOL_MIN_SIZE')).toBe('300');
-        });
-
-        it('rejects invalid number with 400', async () => {
-            const res = await request(app.getHttpServer())
-                .post('/admin/settings')
-                .set('Authorization', `Bearer ${ADMIN_TOKEN}`)
-                .send({ POOL_MIN_SIZE: -5 });
-            expect(res.status).toBe(400);
+            expect(store.get('WELCOME_BOT_USERNAME')).toBe('alex_welcome_bot');
         });
 
         it('clears runtime override on empty string', async () => {

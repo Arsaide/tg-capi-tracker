@@ -1,26 +1,26 @@
 # tg-capi-tracker
 
-NestJS server that attributes Telegram-channel joins to Facebook Ad clicks and forwards the funnel to Meta via the **Conversion API (CAPI)**.
+NestJS HTTP API that attributes a Telegram-bot funnel to Facebook Ad clicks and forwards it to Meta via the **Conversion API (CAPI)**.
 
-Funnel: **FB Ad → landing → Telegram channel**
-Events: `PageView` (browser pixel) → `Lead` (server) → `Subscribe` (server)
+Funnel: **FB Ad → landing → welcome bot**
+Events: `PageView` (browser pixel, on the site) → `Lead` (server, `/track/bot/activate`, when the user enters via the welcome bot)
 
-Telegram channels don't carry an attributable payload on join, so every landing visitor is handed a **personal single-use invite link** (`member_limit: 1`). The resulting `chat_member` update matches 1:1 against the click that issued the link.
+`/track/click` returns a welcome-bot deep link `https://t.me/<bot>?start=<clickId>` — the `clickId` rides as the bot's `/start` payload, so attribution needs no invite links or `chat_member` matching. `/track/click` fires no CAPI event. When the user presses **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ** in the (external Python) welcome bot, the bot calls back into `/track/bot/activate` and `Lead` fires server-side. The server runs no Telegram bot of its own.
 
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env             # set ADMIN_TOKEN and BOT_TOKEN
+cp .env.example .env             # set ADMIN_TOKEN and WELCOME_BOT_USERNAME
 docker compose up -d --build     # postgres + redis + app; migrations apply automatically
-open http://localhost:3000/admin # paste ADMIN_TOKEN, fill CHANNEL_ID / FB_*
+open http://localhost:3000/admin # paste ADMIN_TOKEN, fill WELCOME_BOT_USERNAME / FB_*
 ```
 
 Minimum `.env`:
 
-- `ADMIN_TOKEN` — bearer for `/admin`. Generate with `openssl rand -hex 32`.
-- `BOT_TOKEN` — token from `@BotFather`. The bot must be a channel admin with `can_invite_users`.
+- `ADMIN_TOKEN` — bearer for `/admin` **and** for the server-to-server `/track/bot/*` calls the welcome bot makes. Generate with `openssl rand -hex 32`.
+- `WELCOME_BOT_USERNAME` — `@username` (without `@`) of the welcome bot the landing links into.
 
-Everything else (`CHANNEL_ID`, `FB_PIXEL_ID`, `FB_CAPI_TOKEN`, pool sizing) is configured at runtime via `/admin` — see [`docs/admin-ui.md`](docs/admin-ui.md).
+Everything else (`FB_PIXEL_ID`, `FB_CAPI_TOKEN`, `LANDING_URL`) is configured at runtime via `/admin` — see [`docs/admin-ui.md`](docs/admin-ui.md). The welcome bot itself lives in [`other-bots/welcome_bot.py`](other-bots/welcome_bot.py) and is configured via `TRACKER_API_URL` + `TRACKER_API_TOKEN` (= `ADMIN_TOKEN`).
 
 ## Local development
 
@@ -34,7 +34,7 @@ bun run start:dev                      # nest start --watch on :3000
 Tests, lint, format:
 
 ```bash
-bun run test           # jest, ~84 specs
+bun run test           # jest, ~59 specs
 bun run test:cov       # with coverage
 bun run lint           # eslint over src/**/*.ts
 bun run format         # prettier --write
@@ -48,11 +48,11 @@ bun run format         # prettier --write
 
 ## Stack
 
-| Layer    | Tech                                   | Role                                                        |
-| -------- | -------------------------------------- | ----------------------------------------------------------- |
-| HTTP     | NestJS 11 + Express                    | `/track/click`, `/admin/*`                                  |
-| Telegram | nestjs-telegraf + Telegraf 4           | `chat_member` handler, invite-link creation                 |
-| CAPI     | axios → Graph API                      | server-side `Lead` / `Subscribe`                            |
-| Hot path | Redis 7                                | `click:*`, `link:*`, `tg:*` (TTL 30 days), invite-link pool |
-| Config   | Postgres 16 + Prisma 6                 | `Setting` table, source of truth for `/admin`               |
-| Tests    | Jest + ioredis-mock + in-memory Prisma | no network deps                                             |
+| Layer    | Tech                                   | Role                                          |
+| -------- | -------------------------------------- | --------------------------------------------- |
+| HTTP     | NestJS 11 + Express                    | `/track/click`, `/track/bot/*`, `/admin/*`    |
+| CAPI     | axios → Graph API                      | server-side `Lead`                            |
+| Hot path | Redis 7                                | `click:*`, `tg:*` (TTL 30 days)               |
+| Config   | Postgres 16 + Prisma 6                 | `Setting` table, source of truth for `/admin` |
+| Bot      | Python aiogram (`other-bots/`)         | external welcome bot, calls `/track/bot/*`    |
+| Tests    | Jest + ioredis-mock + in-memory Prisma | no network deps                               |

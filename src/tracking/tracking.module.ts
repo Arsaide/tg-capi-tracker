@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TrackingService } from './tracking.service';
 import { TrackingController } from './tracking.controller';
-import { InvitePoolModule } from '../invite-pool/invite-pool.module';
 import { CapiModule } from '../capi/capi.module';
+import { AdminGuard } from '../settings/admin.guard';
 
 @Module({
-    imports: [InvitePoolModule, CapiModule],
-    providers: [TrackingService],
+    imports: [CapiModule],
+    providers: [TrackingService, AdminGuard],
     controllers: [TrackingController],
     exports: [TrackingService],
 })

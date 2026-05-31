@@ -3,16 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type SettingKey =
-    | 'BOT_TOKEN'
-    | 'CHANNEL_ID'
+    | 'WELCOME_BOT_USERNAME'
     | 'FB_PIXEL_ID'
     | 'FB_CAPI_TOKEN'
     | 'FB_API_VERSION'
     | 'FB_TEST_EVENT_CODE'
-    | 'LANDING_URL'
-    | 'POOL_MIN_SIZE'
-    | 'POOL_REFILL_BATCH'
-    | 'POOL_REFILL_DELAY_MS';
+    | 'LANDING_URL';
 
 export interface SettingDef {
     key: SettingKey;
@@ -23,27 +19,17 @@ export interface SettingDef {
     description?: string;
     restartRequired?: boolean;
     hiddenInUi?: boolean;
-    group: 'telegram' | 'facebook' | 'pool';
+    group: 'telegram' | 'facebook';
 }
 
 export const SETTINGS: SettingDef[] = [
     {
-        key: 'BOT_TOKEN',
+        key: 'WELCOME_BOT_USERNAME',
         type: 'string',
-        secret: true,
         required: true,
-        restartRequired: true,
-        hiddenInUi: true,
         group: 'telegram',
         description:
-            'Telegram bot token. Бот должен быть админом канала с правом can_invite_users.',
-    },
-    {
-        key: 'CHANNEL_ID',
-        type: 'string',
-        required: true,
-        group: 'telegram',
-        description: 'Numeric channel id, например -1001234567890.',
+            '@username приветственного бота (без @). Из него собирается deep-link в ответе /track/click: https://t.me/<username>?start=<clickId>.',
     },
     { key: 'FB_PIXEL_ID', type: 'string', required: true, group: 'facebook' },
     {
@@ -66,27 +52,6 @@ export const SETTINGS: SettingDef[] = [
         type: 'string',
         group: 'facebook',
         description: 'Идёт в event_source_url.',
-    },
-    {
-        key: 'POOL_MIN_SIZE',
-        type: 'number',
-        default: 200,
-        group: 'pool',
-        description: 'Сколько ссылок держать наготове.',
-    },
-    {
-        key: 'POOL_REFILL_BATCH',
-        type: 'number',
-        default: 50,
-        group: 'pool',
-        description: 'Сколько досоздавать за один проход.',
-    },
-    {
-        key: 'POOL_REFILL_DELAY_MS',
-        type: 'number',
-        default: 120,
-        group: 'pool',
-        description: 'Пауза между createChatInviteLink (анти-ратлимит).',
     },
 ];
 
