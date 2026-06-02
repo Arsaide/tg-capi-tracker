@@ -21,6 +21,7 @@ describe('TrackingController', () => {
             createClick: jest.fn().mockResolvedValue('click-1'),
             getClick: jest.fn().mockResolvedValue({ ts: 1, fbclid: 'CL' }),
             linkUser: jest.fn().mockResolvedValue(undefined),
+            getClickIdByUser: jest.fn().mockResolvedValue(null),
         } as unknown as jest.Mocked<TrackingService>;
         capi = {
             send: jest.fn().mockResolvedValue(undefined),
@@ -132,6 +133,38 @@ describe('TrackingController', () => {
                 .send({ clickId: 'gone', tgUserId: 555 });
 
             expect(res.body).toEqual({ ok: false, error: 'click_expired' });
+            expect(capi.send).not.toHaveBeenCalled();
+        });
+
+        it('resolves clickId from tgUserId when clickId is omitted and fires Lead', async () => {
+            tracking.getClickIdByUser.mockResolvedValueOnce('click-1');
+            const res = await request(app.getHttpServer())
+                .post('/track/bot/activate')
+                .set('Authorization', `Bearer ${ADMIN_TOKEN}`)
+                .send({ tgUserId: 555 });
+
+            expect(res.status).toBe(201);
+            expect(res.body).toEqual({ ok: true });
+            expect(tracking.getClickIdByUser).toHaveBeenCalledWith(555);
+            expect(tracking.linkUser).toHaveBeenCalledWith(555, 'click-1');
+            expect(capi.send).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    eventName: 'Lead',
+                    eventId: 'lead_click-1',
+                    ctx: expect.objectContaining({ tgUserId: 555 }),
+                }),
+            );
+        });
+
+        it('returns attributed:false (no Lead) when the user has no click mapping', async () => {
+            tracking.getClickIdByUser.mockResolvedValueOnce(null);
+            const res = await request(app.getHttpServer())
+                .post('/track/bot/activate')
+                .set('Authorization', `Bearer ${ADMIN_TOKEN}`)
+                .send({ tgUserId: 999 });
+
+            expect(res.status).toBe(201);
+            expect(res.body).toEqual({ ok: true, attributed: false });
             expect(capi.send).not.toHaveBeenCalled();
         });
     });

@@ -8,15 +8,24 @@ handling anymore.
 ## Funnel and events
 
 Only two events. The site stage is **PageView** (browser pixel — the server fires nothing
-on `/track/click`). The conversion is **Lead**, fired server-side when the user enters the
-funnel through the welcome bot (the button press).
+on `/track/click`). The conversion is **Lead**, fired server-side when the user's channel
+join request is approved by the AI-terminal bot.
 
 ```
 FB Ad ──► landing ──► [button] ──► t.me/<welcome_bot>?start=<clickId> ──► welcome bot
               │                                                              │
-              ▼                                                    user taps "🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ"
-        PageView (pixel)                                                     │
-        (browser only)                                                       ▼
+              ▼                                              POST /track/bot/start {clickId, tgUserId}
+        PageView (pixel)                                     tg:{userId} → clickId stored
+        (browser only)                                                       │
+                                                             user taps "Вступить в канал"
+                                                                             │
+                                                                             ▼
+                                                              channel join-request submitted
+                                                                             │
+                                                              AI-terminal bot (chat_join_request)
+                                                              DMs user → approves request
+                                                                             │
+                                                                             ▼
                                                                     POST /track/bot/activate
                                                                    ┌──────── Lead ────────┐
                                                                    │      server-side      │
@@ -24,10 +33,10 @@ FB Ad ──► landing ──► [button] ──► t.me/<welcome_bot>?start=<c
                                                                    └───────────────────────┘
 ```
 
-| Stage      | Source                                   | CAPI event | `event_id`       |
-| ---------- | ---------------------------------------- | ---------- | ---------------- |
-| Site       | landing (browser pixel)                  | `PageView` | (pixel-generated)|
-| Conversion | welcome bot (`POST /track/bot/activate`) | `Lead`     | `lead_<clickId>` |
+| Stage      | Source                                                    | CAPI event | `event_id`       |
+| ---------- | --------------------------------------------------------- | ---------- | ---------------- |
+| Site       | landing (browser pixel)                                   | `PageView` | (pixel-generated)|
+| Conversion | AI-terminal bot (`POST /track/bot/activate {tgUserId}`)   | `Lead`     | `lead_<clickId>` |
 
 `POST /track/click` itself sends no CAPI event — it only persists the click context and
 hands back the deep link.
@@ -39,7 +48,7 @@ the previous design needed single-use `member_limit: 1` invite links. The bot de
 solves it directly: `https://t.me/<bot>?start=<payload>` hands the bot an arbitrary
 token on `/start`. The token charset is `A-Za-z0-9_-`, max 64 chars — a `clickId`
 (36-char UUID) fits, so **the clickId IS the start payload**. No invite pool, no
-link↔click mapping, no `chat_member` matching.
+link↔click mapping.
 
 Flow:
 
@@ -47,11 +56,14 @@ Flow:
    `https://t.me/<WELCOME_BOT_USERNAME>?start=<clickId>`. No CAPI event (PageView is the
    browser pixel).
 2. User opens the welcome bot → `/start <clickId>` → the bot calls `POST /track/bot/start`
-   `{clickId, tgUserId}` → we write `tg:{userId} → clickId`.
-3. User taps **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ** → the bot calls `POST /track/bot/activate`
-   `{clickId, tgUserId}` → we fire `Lead` with the click's `fbc/fbp/IP/UA` plus
-   `external_id` (the hashed Telegram user id). The bot then reveals a URL button into
-   the main trading bot.
+   `{clickId, tgUserId}` → we write `tg:{userId} → clickId`. The bot shows a
+   **Вступить в канал** button pointing at the channel's join-request invite link.
+3. User submits a join request to the channel. The AI-terminal bot (`other-bots/bot.py`,
+   `alexlab_trade_bot`) is the channel admin. Its `chat_join_request` handler: (a) DMs
+   the user via `user_chat_id` before approving; (b) approves the request; (c) calls
+   `POST /track/bot/activate {tgUserId}` → the server resolves the clickId from the
+   stored `tg:{userId}` mapping and fires `Lead` with the click's `fbc/fbp/IP/UA` plus
+   `external_id` (the hashed Telegram user id).
 
 The `/track/bot/*` endpoints are server-to-server and guarded by `AdminGuard`
 (Bearer `ADMIN_TOKEN`) — the welcome bot sends it as `Authorization: Bearer <token>`.
@@ -62,11 +74,13 @@ The `/track/bot/*` endpoints are server-to-server and guarded by `AdminGuard`
 
 | Key            | Value                                         | Writer                                              | Reader                                         |
 | -------------- | --------------------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
-| `click:{uuid}` | `ClickContext` (fbclid, fbc, fbp, ip, ua, ts) | `TrackingService.createClick` (`POST /track/click`) | `getClick` / `getClickByUser`                  |
-| `tg:{userId}`  | `clickId` (uuid)                              | `TrackingService.linkUser` (`/track/bot/start` or `/activate`) | follow-up events (`Purchase`, `CompleteRegistration`) |
+| `click:{uuid}` | `ClickContext` (fbclid, fbc, fbp, ip, ua, ts) | `TrackingService.createClick` (`POST /track/click`) | `getClick` / `getClickByUser` / `getClickIdByUser` |
+| `tg:{userId}`  | `clickId` (uuid)                              | `TrackingService.linkUser` (`/track/bot/start` or `/activate`) | `getClickIdByUser` (`/track/bot/activate`), follow-up events |
 
-The `clickId` travels through the deep link itself, so there is no Redis key mapping a
-link back to a click — the client already holds it.
+The `clickId` travels through the welcome-bot deep link, so there is no Redis key mapping
+a link back to a click — the client already holds it. Once `tg:{userId}` is written,
+callers that only know the Telegram user id (e.g. the AI-terminal bot) can resolve the
+full click context without ever seeing the clickId.
 
 ### Postgres (config source of truth)
 
@@ -94,7 +108,7 @@ restart-bound setting now that the in-process bot is gone).
 
 | Module      | Responsibility                                                                                                                                                                                                                  |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tracking/` | `POST /track/click` (persist context, build the welcome-bot deep link — no CAPI), and the guarded `POST /track/bot/start` (`linkUser`, no event) / `POST /track/bot/activate` (`linkUser` + fire `Lead`) the welcome bot calls. |
+| `tracking/` | `POST /track/click` (persist context, build the welcome-bot deep link — no CAPI), and the guarded `POST /track/bot/start` (`{clickId, tgUserId}` → `linkUser`, no event) / `POST /track/bot/activate` (`{tgUserId[, clickId]}` → resolves clickId from `tg:{userId}` mapping if omitted, fires `Lead`; returns `{ok, attributed: false}` with no event when no mapping exists for an organic join). Called by the welcome bot (`/start`) and the AI-terminal bot (`chat_join_request`) respectively. |
 | `capi/`     | `CapiService.send(ConversionEvent)`. Builds `fbc` from `fbclid + ts` when the cookie was not captured; a real `_fbc` always wins. `fbc/fbp/IP/UA` are **not** hashed; `external_id` is SHA-256 of the trimmed-lowercased value. |
 | `settings/` | `SettingsService` + `/admin` (HTML UI + JSON API under `AdminGuard`).                                                                                                                                                          |
 | `redis/`    | `@Global` ioredis client exported under the `REDIS` token.                                                                                                                                                                     |
@@ -103,16 +117,17 @@ restart-bound setting now that the in-process bot is gone).
 ## Non-obvious invariants
 
 1. **`app.set('trust proxy', true)`** in `main.ts`. CAPI match quality depends on the client IP — behind nginx/cloudflare without `trust proxy` the Graph API would receive the server's IP, not the user's.
-2. **`strictNullChecks: false`** in `tsconfig.json`. The compiler will not catch `null`/`undefined` in request bodies or Redis return values — handle them explicitly (the `/track/bot/*` handlers null-check `clickId`/`tgUserId` and the resolved click).
-3. **The deep-link payload must stay within `[A-Za-z0-9_-]`, ≤64 chars.** The clickId (UUID) satisfies this. If you ever change the clickId format, keep it inside that charset or Telegram will reject the `/start` payload.
+2. **`strictNullChecks: false`** in `tsconfig.json`. The compiler will not catch `null`/`undefined` in request bodies or Redis return values — handle them explicitly (the `/track/bot/*` handlers null-check `tgUserId` and the resolved click; `/track/bot/activate` additionally guards the case where `tg:{userId}` has no mapping, returning `{ok: true, attributed: false}` without firing an event).
+3. **The deep-link payload must stay within `[A-Za-z0-9_-]`, ≤64 chars.** The clickId (UUID) satisfies this. If you ever change the clickId format, keep it inside that charset or Telegram will reject the `/start` payload. The AI-terminal bot never receives the clickId — it resolves the click from the `tg:{userId}` mapping written earlier by the welcome bot.
 4. **`WELCOME_BOT_USERNAME` is required** — `/track/click` calls `getRequired` on it to build the deep link, so an unset value makes the endpoint throw. Store it without the leading `@` (a leading `@` is stripped defensively).
 
 ## Adding deeper conversion events
 
-The `tg:{userId} → clickId` mapping (written at `/track/bot/start` and `/track/bot/activate`)
-is the integration point. When a downstream bot knows the Telegram `user_id` — e.g. the main
-trading bot confirms a deposit — it can `POST` an event that resolves the click via
-`TrackingService.getClickByUser(userId)` and fires `CapiService.send` with the appropriate
-`eventName` and a stable `eventId` (`<event>_<clickId>`). This is how `CompleteRegistration`
-(trader-id entered) and `Purchase` (deposit confirmed) would attach to the original ad click
-without forwarding the clickId all the way into the main bot.
+The `tg:{userId} → clickId` mapping (written at `/track/bot/start` by the welcome bot)
+is the integration point. When a downstream bot knows the Telegram `user_id` — e.g. the
+AI-terminal bot confirms a deposit — it can `POST` an event that resolves the click via
+`TrackingService.getClickIdByUser(userId)` / `getClickByUser(userId)` and fires
+`CapiService.send` with the appropriate `eventName` and a stable `eventId`
+(`<event>_<clickId>`). This is how `CompleteRegistration` (trader-id entered) and
+`Purchase` (deposit confirmed) would attach to the original ad click without forwarding
+the clickId into the AI-terminal bot.

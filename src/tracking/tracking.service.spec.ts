@@ -62,5 +62,15 @@ describe('TrackingService', () => {
         it('returns null when user has no mapping', async () => {
             expect(await service.getClickByUser(123)).toBeNull();
         });
+
+        it('getClickIdByUser returns the raw clickId stored for a user', async () => {
+            const clickId = await service.createClick({ fbclid: 'CL' });
+            await service.linkUser(987, clickId);
+            expect(await service.getClickIdByUser(987)).toBe(clickId);
+        });
+
+        it('getClickIdByUser returns null when user has no mapping', async () => {
+            expect(await service.getClickIdByUser(123)).toBeNull();
+        });
     });
 });

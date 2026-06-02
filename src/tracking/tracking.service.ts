@@ -28,6 +28,10 @@ export class TrackingService {
         await this.redis.set(this.userKey(uid), clickId, 'EX', TTL_SECONDS);
     }
 
+    async getClickIdByUser(uid: string | number): Promise<string | null> {
+        return this.redis.get(this.userKey(uid));
+    }
+
     async getClick(clickId: string): Promise<ClickContext | null> {
         const raw = await this.redis.get(this.clickKey(clickId));
         return raw ? (JSON.parse(raw) as ClickContext) : null;

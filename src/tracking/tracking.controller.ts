@@ -80,26 +80,33 @@ export class TrackingController {
     }
 
     /**
-     * Called by the welcome bot when the user presses the welcome button
-     * ("🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ") — i.e. enters the funnel via the bot.
-     * This is the conversion: fires Lead with the click's attribution data
-     * + external_id (the Telegram user id).
+     * Fires the Lead conversion. Two callers:
+     *  - AI-terminal channel-join handler: passes only `tgUserId`; the clickId is
+     *    resolved from the tg:{userId} mapping the welcome bot stored at /track/bot/start.
+     *  - (legacy) welcome-bot button: passes `clickId` directly.
+     * No click mapping -> organic/untracked join -> no event.
      */
     @Post('bot/activate')
     @UseGuards(AdminGuard)
     async botActivate(@Body() dto: BotEventDto) {
-        if (!dto.clickId || dto.tgUserId == null) {
+        if (dto.tgUserId == null) {
             return { ok: false, error: 'bad_request' };
         }
-        const ctx = await this.tracking.getClick(dto.clickId);
+
+        const clickId = dto.clickId ?? (await this.tracking.getClickIdByUser(dto.tgUserId));
+        if (!clickId) {
+            return { ok: true, attributed: false };
+        }
+
+        const ctx = await this.tracking.getClick(clickId);
         if (!ctx) {
             return { ok: false, error: 'click_expired' };
         }
-        await this.tracking.linkUser(dto.tgUserId, dto.clickId);
+        await this.tracking.linkUser(dto.tgUserId, clickId);
 
         await this.capi.send({
             eventName: 'Lead',
-            eventId: `lead_${dto.clickId}`,
+            eventId: `lead_${clickId}`,
             ctx: { ...ctx, tgUserId: dto.tgUserId },
         });
 

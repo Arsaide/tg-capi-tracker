@@ -34,7 +34,7 @@ What to wire on the landing page so clicks and joins get attributed.
         const params = new URLSearchParams(location.search);
         const getCookie = n => (document.cookie.match('(^|; )' + n + '=([^;]*)') || [])[2];
 
-        const res = await fetch('https://YOUR_BACKEND/track/click', {
+        const res = await fetch('https://api.alex-lab.online/track/click', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -58,7 +58,7 @@ What happens here:
 1. **Meta Pixel base code** fires `PageView` in the browser and writes the `_fbp` (per-browser, stable) and `_fbc` (built from the `fbclid` URL param) cookies.
 2. **A separate JS request** posts the click payload to the backend: `fbclid` from the URL (in case the `_fbc` cookie hasn't been written yet) plus both cookies.
 3. **Backend** persists the context in Redis and returns a **welcome-bot deep link** `https://t.me/<WELCOME_BOT_USERNAME>?start=<clickId>` — the `clickId` is the attribution key carried as the bot's `/start` payload. No CAPI event fires here (the site-stage event is the browser `PageView`).
-4. **JS rewrites the button's href** — the user taps it, opens the welcome bot, and presses **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ**. That button press is the conversion: the welcome bot calls `POST /track/bot/activate` and the backend fires `Lead`.
+4. **JS rewrites the button's href** — the user taps it, opens the welcome bot, and presses **Вступить в канал**. The welcome bot registers the attribution mapping (`POST /track/bot/start`) and routes the user to the channel's join-request invite link. When the user submits the join request, the AI-terminal bot (`alexlab_trade_bot`) approves it and calls `POST /track/bot/activate {tgUserId}` — the backend resolves the clickId from the stored mapping and fires `Lead`.
 
 ## `POST /track/click` contract
 
@@ -95,7 +95,7 @@ set it in `/admin` first.
 
 ## Deduplication with the pixel
 
-The landing fires `PageView` via the pixel (browser); the server fires `Lead` only later, on the welcome-bot button press (`POST /track/bot/activate`). Different event names → no overlap, no dedup needed by default.
+The landing fires `PageView` via the pixel (browser); the server fires `Lead` only later, when the AI-terminal bot processes the channel join request (`POST /track/bot/activate {tgUserId}`). Different event names → no overlap, no dedup needed by default.
 
 If you ALSO fire a pixel-side `Lead` somewhere (e.g. `fbq('track', 'Lead')`), dedup it against the server `Lead` by passing the **same `event_id`** — the server uses `lead_<clickId>`, and `clickId` is returned by `/track/click`:
 
@@ -114,10 +114,10 @@ app.enableCors({ origin: 'https://your-landing.example' });
 
 ## Deeper events (CompleteRegistration / Purchase)
 
-`tg:{userId} → clickId` is written to Redis when the welcome bot calls `/track/bot/start`
-or `/track/bot/activate`. While that mapping is alive (TTL 30 days) any follow-up event can
-be attributed by the Telegram `user_id` alone — the clickId does **not** need to be forwarded
-into the main trading bot.
+`tg:{userId} → clickId` is written to Redis when the welcome bot calls `/track/bot/start`.
+While that mapping is alive (TTL 30 days) any follow-up event can be attributed by the
+Telegram `user_id` alone — the clickId does **not** need to be forwarded into the
+AI-terminal bot.
 
 A downstream bot (e.g. the main trading bot confirming a deposit) `POST`s the event server-side
 and the backend resolves the click:
@@ -138,12 +138,30 @@ if (ctx) {
 This is a natural extension point — wire a `/track/bot/event` endpoint (guarded by
 `ADMIN_TOKEN`, same as `/track/bot/activate`) that takes `{ tgUserId, eventName, value }`.
 
+## `POST /track/bot/activate` — channel join attribution
+
+Called by the AI-terminal bot from its `chat_join_request` handler, **after** approving
+the join request:
+
+```json
+{ "tgUserId": "123456789" }
+```
+
+`clickId` is optional. When omitted the server resolves it from the stored
+`tg:{tgUserId}` mapping (written earlier by `/track/bot/start`). Possible responses:
+
+| Scenario | Response |
+| --- | --- |
+| Mapping found → `Lead` fired | `{ "ok": true, "attributed": true }` |
+| No mapping (organic join, no prior site click) | `{ "ok": true, "attributed": false }` — no CAPI event |
+| `clickId` passed explicitly | Backward-compatible; `Lead` fired using the supplied clickId |
+
 ## Debugging match quality
 
 1. Set `FB_TEST_EVENT_CODE` in `/admin` (Events Manager → **Test Events** tab → a code like `TEST12345`).
-2. Walk the chain: landing → `Lead` should arrive in Test Events immediately.
-3. Open the welcome bot via the issued deep link and press **🚀 ЗАПУСТИТЬ ИИ-ТЕРМИНАЛ** → `Lead` should arrive.
-4. Match quality: each Test Events entry shows `% matched`. Expect 80–100% with `fbc + fbp + ip + ua + external_id` (the button press adds `external_id`).
+2. Walk the chain: landing → welcome bot → channel join request → AI-terminal bot approves.
+3. `Lead` should arrive in Test Events when the join request is approved.
+4. Match quality: each Test Events entry shows `% matched`. Expect 80–100% with `fbc + fbp + ip + ua + external_id` (the channel join adds `external_id`).
 
 Things that hurt match quality:
 
