@@ -4,12 +4,7 @@ import { AppModule } from './app.module';
 import {NestExpressApplication} from "@nestjs/platform-express";
 
 async function bootstrap() {
-    const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-        logger:
-            process.env.NODE_ENV === 'development'
-                ? ['log', 'error', 'warn', 'debug', 'verbose']
-                : ['error', 'warn']
-    })
+    const app = await NestFactory.create<NestExpressApplication>(AppModule)
 
     app.set('trust proxy', 1)
     app.use(json());
